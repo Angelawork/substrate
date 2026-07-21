@@ -17,6 +17,7 @@ package controllers
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc"
@@ -31,7 +32,49 @@ import (
 	atev1alpha1 "github.com/agent-substrate/substrate/pkg/api/v1alpha1"
 )
 
+func TestDefaultGoldenWarmup(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string // "" means leave ATE_GOLDEN_WARMUP_SECONDS unset
+		want time.Duration
+	}{
+		{name: "unset uses default", env: "", want: goldenSnapshotWarmup},
+		{name: "valid override", env: "120", want: 120 * time.Second},
+		{name: "zero snapshots immediately", env: "0", want: 0},
+		{name: "negative falls back", env: "-5", want: goldenSnapshotWarmup},
+		{name: "garbage falls back", env: "20s", want: goldenSnapshotWarmup},
+		{name: "float falls back", env: "1.5", want: goldenSnapshotWarmup},
+		{name: "whitespace falls back", env: " 30 ", want: goldenSnapshotWarmup},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(goldenWarmupEnv, tt.env)
+			if got := defaultGoldenWarmup(t.Context()); got != tt.want {
+				t.Errorf("defaultGoldenWarmup() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A template with readyz on every container skips the warmup regardless of the
+// env override — the probe already proved the workload is up.
+func TestGoldenSnapshotWarmupForIgnoresEnvWhenReadyzPresent(t *testing.T) {
+	t.Setenv(goldenWarmupEnv, "300")
+	at := &atev1alpha1.ActorTemplate{
+		Spec: atev1alpha1.ActorTemplateSpec{Containers: []atev1alpha1.Container{
+			{Name: "a", Readyz: &atev1alpha1.ContainerReadyz{HTTPGet: &atev1alpha1.HTTPGetAction{Port: 80}}},
+		}},
+	}
+	if got := goldenSnapshotWarmupFor(t.Context(), at); got != 0 {
+		t.Errorf("goldenSnapshotWarmupFor = %v, want 0", got)
+	}
+}
+
 func TestGoldenSnapshotWarmupFor(t *testing.T) {
+	// Keep the non-readyz cases pinned to goldenSnapshotWarmup even if the
+	// developer's shell exports an override.
+	t.Setenv(goldenWarmupEnv, "")
+
 	probe := &atev1alpha1.ContainerReadyz{
 		HTTPGet: &atev1alpha1.HTTPGetAction{Port: 80},
 	}
@@ -83,7 +126,7 @@ func TestGoldenSnapshotWarmupFor(t *testing.T) {
 			at := &atev1alpha1.ActorTemplate{
 				Spec: atev1alpha1.ActorTemplateSpec{Containers: tt.containers},
 			}
-			got := goldenSnapshotWarmupFor(at)
+			got := goldenSnapshotWarmupFor(t.Context(), at)
 			if tt.wantZero && got != 0 {
 				t.Errorf("goldenSnapshotWarmupFor = %v, want 0", got)
 			}

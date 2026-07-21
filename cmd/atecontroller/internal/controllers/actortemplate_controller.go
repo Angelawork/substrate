@@ -17,6 +17,8 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/agent-substrate/substrate/internal/resources"
@@ -30,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
@@ -41,8 +44,41 @@ const (
 	// a readiness probe. Templates whose containers all declare readyz skip
 	// this wait — ResumeActor only returns once readyz reports 200, so the
 	// workload is already initialized by the time we get here.
+	//
+	// The default can be overridden with the ATE_GOLDEN_WARMUP_SECONDS env
+	// var: workloads with a long, probe-less initialization (e.g. a heavy
+	// multi-process runtime that keeps warming up well past the 20s default)
+	// otherwise get checkpointed before they are ready.
 	goldenSnapshotWarmup = 20 * time.Second
+
+	// goldenWarmupEnv overrides goldenSnapshotWarmup with a whole number of
+	// seconds when set to a valid, non-negative integer.
+	goldenWarmupEnv = "ATE_GOLDEN_WARMUP_SECONDS"
 )
+
+// defaultGoldenWarmup returns the golden-snapshot warmup delay, honoring the
+// ATE_GOLDEN_WARMUP_SECONDS env override and falling back to goldenSnapshotWarmup
+// when the var is unset or invalid.
+//
+// Zero is accepted here, unlike the atenet timeout knobs, which require a
+// positive value. This is a delay, not a deadline: 0 means "snapshot as soon as
+// the golden actor resumes", which is exactly what a template with readyz on
+// every container already does (see goldenSnapshotWarmupFor). A zero timeout, by
+// contrast, would mean "no bound at all" and is rejected there. Negative and
+// unparseable values are rejected in both places and fall back to the default.
+func defaultGoldenWarmup(ctx context.Context) time.Duration {
+	v := os.Getenv(goldenWarmupEnv)
+	if v == "" {
+		return goldenSnapshotWarmup
+	}
+	secs, err := strconv.Atoi(v)
+	if err != nil || secs < 0 {
+		log.FromContext(ctx).Info("Ignoring invalid golden warmup override; expected a non-negative whole number of seconds",
+			"env", goldenWarmupEnv, "value", v, "using", goldenSnapshotWarmup)
+		return goldenSnapshotWarmup
+	}
+	return time.Duration(secs) * time.Second
+}
 
 type ActorTemplateReconciler struct {
 	client.Client
@@ -136,7 +172,7 @@ func (r *ActorTemplateReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 
 		at.Status.Phase = atev1alpha1.PhaseWaitGoldenActor
-		at.Status.TakeGoldenSnapshotAt = metav1.NewTime(time.Now().Add(goldenSnapshotWarmupFor(at)))
+		at.Status.TakeGoldenSnapshotAt = metav1.NewTime(time.Now().Add(goldenSnapshotWarmupFor(ctx, at)))
 		if err := r.Status().Update(ctx, at); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -195,14 +231,14 @@ func (r *ActorTemplateReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // a readyz probe (so ResumeActor already blocked until the workload reported
 // 200), and the default warmup otherwise. A template with no containers
 // keeps the default — there is nothing to gate on.
-func goldenSnapshotWarmupFor(at *atev1alpha1.ActorTemplate) time.Duration {
+func goldenSnapshotWarmupFor(ctx context.Context, at *atev1alpha1.ActorTemplate) time.Duration {
 	containers := at.Spec.Containers
 	if len(containers) == 0 {
-		return goldenSnapshotWarmup
+		return defaultGoldenWarmup(ctx)
 	}
 	for i := range containers {
 		if containers[i].Readyz == nil {
-			return goldenSnapshotWarmup
+			return defaultGoldenWarmup(ctx)
 		}
 	}
 	return 0

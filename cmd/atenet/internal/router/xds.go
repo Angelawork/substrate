@@ -400,7 +400,11 @@ func (x *XdsServer) buildRoutes() *routev3.RouteConfiguration {
 								ClusterSpecifier: &routev3.RouteAction_Cluster{
 									Cluster: "dynamic_forward_proxy_cluster",
 								},
-								Timeout: durationpb.New(10 * time.Second),
+								// Long-lived agent turns (e.g. an LLM streaming a
+								// response) can far exceed the default 10s route
+								// timeout and get cut off mid-turn. Configurable via
+								// ATE_ROUTE_TIMEOUT_SECONDS (see timeouts.go).
+								Timeout: durationpb.New(routeTimeout()),
 							},
 						},
 					},
@@ -418,13 +422,19 @@ func (x *XdsServer) buildHcm(statPrefix string) *anypb.Any {
 					ClusterName: ClusterName,
 				},
 			},
-			Timeout: durationpb.New(5 * time.Second),
+			// The ext_proc round-trip can drive a cold restore-on-demand of a
+			// suspended actor (a gVisor restore of a large snapshot), which may
+			// take tens of seconds; the default 5s timeout aborts the restore.
+			// Configurable via ATE_EXTPROC_TIMEOUT_SECONDS (see timeouts.go).
+			Timeout: durationpb.New(extProcTimeout()),
 		},
 		MutationRules: &mutationrulesv3.HeaderMutationRules{
 			AllowAllRouting: &wrapperspb.BoolValue{Value: true},
 		},
-		// Explicitly configure the message timeout to avoid the 200ms default
-		MessageTimeout: durationpb.New(5 * time.Second),
+		// Explicitly configure the message timeout to avoid the 200ms default.
+		// Sized to accommodate a cold restore-on-demand (see the GrpcService
+		// timeout above) rather than just the steady-state header exchange.
+		MessageTimeout: durationpb.New(extProcTimeout()),
 		ProcessingMode: &extprocv3filter.ProcessingMode{
 			RequestHeaderMode:   extprocv3filter.ProcessingMode_SEND,
 			ResponseHeaderMode:  extprocv3filter.ProcessingMode_SKIP,

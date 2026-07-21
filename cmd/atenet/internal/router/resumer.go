@@ -55,7 +55,12 @@ func (r *ActorResumer) ResumeActor(ctx context.Context, atespace, actorName stri
 		// We detach the context from the first caller using a fixed background timeout.
 		// This guarantees that if Caller 1 disconnects or times out, the underlying
 		// resume operation continues running for Caller 2 and Caller 3 without failing.
-		bgCtx, bgCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		//
+		// The ceiling must cover a cold restore of a large snapshot: a ~60 MiB
+		// gVisor restore can exceed the default 15s, and a shorter timeout cancels
+		// the in-flight restore, surfacing as a 504. Configurable via
+		// ATE_RESUME_TIMEOUT_SECONDS (see timeouts.go).
+		bgCtx, bgCancel := context.WithTimeout(context.Background(), resumeTimeout())
 		defer bgCancel()
 
 		backoff := wait.Backoff{

@@ -91,6 +91,16 @@ spec:
         args:
         - --ateapi-ca-file=/run/servicedns-ca/trust-bundle.pem
         - --ateapi-client-cert=/run/podidentity.podcert.ate.dev/credential-bundle.pem
+        # Delay between resuming the golden actor and checkpointing it, for
+        # templates whose containers do not all declare a readyz probe. Raise it
+        # for workloads with a long, probe-less startup that would otherwise be
+        # snapshotted mid-initialization. Whole seconds, non-negative (0 means
+        # snapshot immediately); anything else is ignored with a warning.
+        # Prefer adding readyz to the ActorTemplate over tuning this — templates
+        # with readyz on every container skip the wait entirely.
+        # env:
+        # - name: ATE_GOLDEN_WARMUP_SECONDS  # default 20
+        #   value: "120"
         ports:
         - name: metrics
           containerPort: 8080

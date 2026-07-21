@@ -157,6 +157,17 @@ spec:
           value: k8s.namespace.name=$(POD_NAMESPACE),k8s.pod.name=$(POD_NAME),k8s.pod.uid=$(POD_UID),service.instance.id=$(POD_UID)
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: http://opentelemetry-collector.gke-managed-otel.svc.cluster.local:4317
+        # Resume-on-demand of a suspended actor performs a cold gVisor restore,
+        # which for a large snapshot (tens of MiB) can take tens of seconds and
+        # blow through the defaults below, surfacing as a 504. Uncomment and
+        # raise these when running heavy actors. Values are whole seconds and
+        # must be positive; anything else is ignored with a warning.
+        # - name: ATE_RESUME_TIMEOUT_SECONDS   # background resume; default 15
+        #   value: "300"
+        # - name: ATE_ROUTE_TIMEOUT_SECONDS    # forwarded upstream request; default 10
+        #   value: "300"
+        # - name: ATE_EXTPROC_TIMEOUT_SECONDS  # ext_proc round-trip, drives the restore; default 5
+        #   value: "300"
         ports:
         - name: xds
           containerPort: 18000
